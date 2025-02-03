@@ -28,7 +28,7 @@ void* smalloc(size_t size){
     MallocMetadata* last_one = NULL;
 
     while (current) {
-        last_one=current;
+        last_one=current;   
         if (current->is_free && current->size >= size) {
             current->is_free = false; 
             num_free_blocks--;
@@ -63,12 +63,15 @@ void* smalloc(size_t size){
 }
 
 void* scalloc(size_t num, size_t size){
-    void* ptr= smalloc(num*size);
-    if(!ptr)
+
+    size_t total_size = num * size;
+    
+    void* ptr = smalloc(total_size);
+    if (!ptr){
         return NULL;
-    for (size_t i = 0; i < num * size; ++i) {
-        ((unsigned char*)ptr)[i] = 0;
     }
+
+    std::memset(ptr, 0, total_size);
     return ptr;
 }
 
@@ -109,7 +112,7 @@ size_t _num_free_bytes() { return num_free_bytes; }
 size_t _num_allocated_blocks() { return num_allocated_blocks; }
 
 size_t _num_allocated_bytes() { return num_allocated_bytes; }
-
+ 
 size_t _num_meta_data_bytes() { return num_meta_data_bytes; }
 
 size_t _size_meta_data() { return sizeof(MallocMetadata); }
