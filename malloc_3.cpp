@@ -179,13 +179,45 @@ void sfree(void* p){
     if(!p){
         return;
     }
+
     MallocMetadata* metadata = (MallocMetadata*)p - 1;
-    if(metadata&&!(metadata->is_free)){
-        metadata->is_free = true;
-        num_free_blocks++;
-        num_free_bytes+=metadata->size;
-        //TODO: implement challenge 2
+
+    if (metadata->is_free){
+        return;
     }
+
+    metadata->is_free = true;
+    num_free_blocks++;
+    num_free_bytes += metadata->size;
+
+    int order = 0;
+    size_t block_size = metadata->size;
+    while (block_size > 64) {
+        block_size /= 2;
+        order++;
+    }
+
+    while (order < MAX_ORDER) {
+        size_t buddy_offset = ((char*)metadata - (char*)sbrk(0)) ^ metadata->size;
+        MallocMetadata* buddy = (MallocMetadata*)((char*)sbrk(0) + buddy_offset);
+        if (!buddy->is_free || buddy->size != metadata->size){
+            break;
+        }
+        if (buddy->prev){
+            buddy->prev->next = buddy->next;
+        }
+        if (buddy->next){
+            buddy->next->prev = buddy->prev;
+        }
+        if (metadata > buddy){
+            metadata = buddy;
+        }
+        metadata->size *= 2;
+        order++;
+    }
+
+    metadata->next = order_arr[order];
+    order_arr[order] = metadata;
 }
 
 void* srealloc(void* oldp, size_t size){
