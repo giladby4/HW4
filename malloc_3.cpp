@@ -27,7 +27,9 @@ bool initialized = false;
 
 void buddy_allocate(){
 
-    int num=32, size=128*1024;
+    int num=32;
+    size_t size = 128 * 1024;
+
 
     void* ptr=sbrk(num*size);
 
@@ -40,7 +42,7 @@ void buddy_allocate(){
         MallocMetadata* current = (MallocMetadata*)ptr;
 
         current->size = size;
-        current->is_free = false;
+        current->is_free = true;
         current->next = NULL;
         current->prev = tail;
         if(tail)
