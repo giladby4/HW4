@@ -94,46 +94,63 @@ MallocMetadata* find_buddy(MallocMetadata* block) {
 // Helper funcation for challange 3,
 // Splitting: given a block from order 'curr_order', split until we reach 'target_order'.
 MallocMetadata* split_block(int curr_order, int target_order) {
+    // Get a block from the free list at a higher order.
     MallocMetadata* block = order_arr[curr_order];
-    if (!block){
+    if (!block) {
         return nullptr;
     }
-    // Remove block from free list:
+    // Remove 'block' from the free list.
     order_arr[curr_order] = block->next;
-    if (order_arr[curr_order]){
+    if (order_arr[curr_order]) {
         order_arr[curr_order]->prev = nullptr;
     }
     num_free_blocks--;
     num_free_bytes -= (block->size - sizeof(MallocMetadata));
-    
+
+    // Split the block until it is at the target order.
     while (curr_order > target_order) {
         curr_order--;
         size_t new_size = block->size / 2;
         
-        // Create buddy block:
+        // The buddy block is located at the address:
+        // (char*)block + new_size
         MallocMetadata* buddy = (MallocMetadata*)((char*)block + new_size);
         buddy->size = new_size;
         buddy->is_free = true;
         buddy->is_mmap_alloc = false;
-
-        buddy->next = order_arr[curr_order];
-        buddy->prev = nullptr;
-        if (order_arr[curr_order]){
-            order_arr[curr_order]->prev = buddy;
-        }
-        order_arr[curr_order] = buddy;
         
-        num_allocated_blocks++;  // new block created
+        // Insert buddy into free list for order 'curr_order' in sorted order.
+        MallocMetadata* current = order_arr[curr_order];
+        MallocMetadata* prev = nullptr;
+        while (current != nullptr && current < buddy) {
+            prev = current;
+            current = current->next;
+        }
+        buddy->next = current;
+        buddy->prev = prev;
+        if (prev != nullptr) {
+            prev->next = buddy;
+        } else {
+            // If no block with a lower address, buddy becomes the head.
+            order_arr[curr_order] = buddy;
+        }
+        if (current != nullptr) {
+            current->prev = buddy;
+        }
+        
+        // Update our statistics.
+        num_allocated_blocks++;  // one new block created by splitting
         num_allocated_bytes -= sizeof(MallocMetadata);
         num_meta_data_bytes += sizeof(MallocMetadata);
         num_free_blocks++;
-
         num_free_bytes += (new_size - sizeof(MallocMetadata));
         
+        // Adjust the original block to now represent the first half.
         block->size = new_size;
     }
     return block;
 }
+
 
 
 void* smalloc(size_t size) {
@@ -221,7 +238,6 @@ void sfree(void* p){
 
     MallocMetadata* block = (MallocMetadata*)p - 1;
 
-    // Check if the block is already free; if so, do nothing.
     if (block->is_free) {
         return;
     }
@@ -252,7 +268,6 @@ void sfree(void* p){
         if (!buddy || !buddy->is_free || buddy->size != block->size){
             break;
         }
-        // Remove buddy from its free list.
         if (buddy->prev){
             buddy->prev->next = buddy->next;
         }
@@ -263,7 +278,7 @@ void sfree(void* p){
             order_arr[order] = buddy->next;
         }
 
-        num_free_blocks--;
+        num_free_blocks--;  // Two free blocks merge into one.
     
         num_meta_data_bytes -= sizeof(MallocMetadata);
         num_allocated_bytes += sizeof(MallocMetadata);
@@ -275,14 +290,29 @@ void sfree(void* p){
         block->size *= 2;
         order++;
     }   
-
-    block->next = order_arr[order];
-    block->prev = nullptr;
-    if (order_arr[order]){
-        order_arr[order]->prev = block;
+    
+    
+    
+    MallocMetadata* current = order_arr[order];
+    MallocMetadata* prev = nullptr;
+    while (current != nullptr && current < block) {
+        prev = current;
+        current = current->next;
     }
-    order_arr[order] = block;
+
+    block->next = current;
+    block->prev = prev;
+    if (prev != nullptr) {
+        prev->next = block;
+    } else {
+        order_arr[order] = block;
+    }
+    if (current != nullptr) {
+        current->prev = block;
+    }
+    
 }
+
 
 void* srealloc(void* oldp, size_t size) {
     // If oldp is NULL, behave like smalloc.
