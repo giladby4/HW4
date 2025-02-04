@@ -15,8 +15,6 @@ struct MallocMetadata {
     bool is_free;
     MallocMetadata* next;
     MallocMetadata* prev;
-    MallocMetadata** buddies;// array to put the buddies in. each block can have a buddy in every order but the max. you fill the array one step from top to down every time you split them.
-
 };
 
 size_t num_free_blocks = 0;
@@ -32,13 +30,16 @@ bool initialized = false;
 
 void buddy_allocate(){
 
-    int num=32;
+    const int num = 32;
     void* ptr=sbrk(num*MMAP_THRESHOLD);
 
-    if (ptr == (void*) -1)
+    if (ptr == (void*) -1){
         return;
+    }
 
-    MallocMetadata *tail = NULL, *head=NULL;
+    MallocMetadata* head = nullptr;
+    MallocMetadata* tail = nullptr;
+
     for(int i=0;i<num;i++){
 
         MallocMetadata* current = (MallocMetadata*)ptr;
@@ -54,75 +55,94 @@ void buddy_allocate(){
 
         tail=current;
 
-        if(head==NULL){
+        if (!head){
             head=current;
         }
 
-        ptr = (char*)ptr + MMAP_THRESHOLD;  // Move to the next block
         num_allocated_blocks++;
-        num_allocated_bytes+=MMAP_THRESHOLD;
+        num_allocated_bytes += (MMAP_THRESHOLD - sizeof(MallocMetadata));
         num_free_blocks++;
         num_free_bytes+=MMAP_THRESHOLD;
         num_meta_data_bytes+=sizeof(MallocMetadata);
 
+        ptr = (char*)ptr + MMAP_THRESHOLD;
+
+
     }
 
     order_arr[MAX_ORDER]=head;
-    return;
+}
 
+
+// Given a block, compute its buddy address using XOR.
+MallocMetadata* find_buddy(MallocMetadata* block) {
+    return (MallocMetadata*)((uintptr_t)block ^ block->size);
 }
 
 
 
 // Helper funcation for challange 3,
-// Splits a block until it matches the requested size
-MallocMetadata* split_block(int order, size_t required_size) {
-    while (order > 0) {
-        MallocMetadata* block = order_arr[order];
+// Splitting: given a block from order 'curr_order', split until we reach 'target_order'.
+MallocMetadata* split_block(int curr_order, int target_order) {
 
-        if (!block){
-            return nullptr;
-        }
+    // Get a block from the free list at a larger order.
+    MallocMetadata* block = order_arr[curr_order];
+    if (!block){
+        return nullptr;
+    }    
 
-        order_arr[order] = block->next;
-
-        if (order_arr[order]) {
-            order_arr[order]->prev = nullptr;
-        }
-
+    // Remove block from free list.
+    order_arr[curr_order] = block->next;
+    if (order_arr[curr_order]){
+        order_arr[curr_order]->prev = nullptr;
+    }
+    // Split until reaching target order.
+    while (curr_order > target_order) {
+        curr_order--;
         size_t new_size = block->size / 2;
+    
+        // Create buddy block.
         MallocMetadata* buddy = (MallocMetadata*)((char*)block + new_size);
         buddy->size = new_size;
         buddy->is_free = true;
-        buddy->next = order_arr[order - 1];
-
-        if (order_arr[order - 1]) {
-            order_arr[order - 1]->prev = buddy;
+    
+        // Insert buddy into free list.
+        buddy->next = order_arr[curr_order];
+        buddy->prev = nullptr;
+        if (order_arr[curr_order]){
+            order_arr[curr_order]->prev = buddy;
         }
-        order_arr[order - 1] = buddy;
-        block->size = new_size;
+        order_arr[curr_order] = buddy;
 
-        order--;
+        num_allocated_bytes -= sizeof(MallocMetadata);
+        num_free_blocks++;
+        num_free_bytes += (new_size - sizeof(MallocMetadata));
+        num_meta_data_bytes += sizeof(MallocMetadata);
+    
+        num_allocated_blocks++;  // one new block created by splitting
+    
+        // Adjust the original block.
+        block->size = new_size;
     }
-    return order_arr[order];
+    return block;
 }
 
 
-void* smalloc(size_t size){
-    
-    if(!initialized){
+void* smalloc(size_t size) {
+    if (!initialized) {
         buddy_allocate();
-        initialized=true;
+        initialized = true;
     }
+    
+    if (size == 0 || size > MAX_SIZE)
+        return nullptr;
+    
+    // Mmap branch for large allocations.
+    if (size >= MMAP_THRESHOLD) {
+        void* ptr = mmap(nullptr, size + sizeof(MallocMetadata),
+                         PROT_READ | PROT_WRITE,
+                         MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
 
-    if(size==0||size>MAX_SIZE){
-        return NULL;
-    }
-
-    //Handle Challange 3
-    if (size >= MMAP_THRESHOLD) { 
-        void* ptr = mmap(nullptr, size + sizeof(MallocMetadata), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-        
         if (ptr == MAP_FAILED){
             return nullptr;
         }
@@ -130,36 +150,49 @@ void* smalloc(size_t size){
         MallocMetadata* metadata = (MallocMetadata*)ptr;
         metadata->size = size;
         metadata->is_free = false;
+
+        // Insert into mmap_list.
         metadata->next = mmap_list;
         mmap_list = metadata;
-
+        
         num_allocated_blocks++;
         num_allocated_bytes += size;
-
+        num_meta_data_bytes += sizeof(MallocMetadata);
         return (void*)(metadata + 1);
     }
+    
+    // For buddy blocks, determine the required block size.
+    size_t needed = size + sizeof(MallocMetadata);
+    int target_order = 0;
+    size_t block_size = 128; // smallest block = 128 bytes, order 0.
 
-    int order_size=64;
-    int order;
-
-    for (order = 0; order <= MAX_ORDER; order++) {
-        order_size *= 2;
-        if (size <= order_size) break;
+    while (block_size < needed && target_order <= MAX_ORDER) {
+        block_size *= 2;
+        target_order++;
+    }
+    if (target_order > MAX_ORDER)
+        return nullptr; // request too large for buddy system
+    
+    // Find the smallest available block that fits.
+    int curr_order = target_order;
+    while (curr_order <= MAX_ORDER && order_arr[curr_order] == nullptr){
+        curr_order++;
     }
 
-    MallocMetadata* block = order_arr[order];
-    if (!block) {
-        block = split_block(order, size);
-        if (!block){
-            return nullptr;
-        }
+    if (curr_order > MAX_ORDER)
+        return nullptr;
+    
+    // Split down to target_order if necessary.
+    MallocMetadata* block = split_block(curr_order, target_order);
+    if (!block){
+        return nullptr;
     }
-
-    order_arr[order] = block->next;
+    
     block->is_free = false;
+    // Update free stats: note that splitting might have added free blocks that remain.
     num_free_blocks--;
     num_free_bytes -= block->size;
-
+    
     return (void*)(block + 1);
 }
 
@@ -180,62 +213,107 @@ void sfree(void* p){
         return;
     }
 
-    MallocMetadata* metadata = (MallocMetadata*)p - 1;
+    MallocMetadata* block = (MallocMetadata*)p - 1;
 
-    if (metadata->is_free){
+    // Check if the block is already free; if so, do nothing.
+    if (block->is_free) {
         return;
     }
 
-    metadata->is_free = true;
-    num_free_blocks++;
-    num_free_bytes += metadata->size;
+    // If the block is an mmap allocation.
+    if (block->size >= MMAP_THRESHOLD) {
+        munmap(block, block->size + sizeof(MallocMetadata));
+        num_allocated_blocks--;
+        num_allocated_bytes -= block->size;
+        return;
+    }
 
+    // Mark block free and update stats.
+    block->is_free = true;
+    num_free_blocks++;
+    num_free_bytes += (block->size - sizeof(MallocMetadata));
+
+    // Determine the order of the block.
     int order = 0;
-    size_t block_size = metadata->size;
-    while (block_size > 64) {
-        block_size /= 2;
+    size_t tmp = block->size;
+    while (tmp > 128) {  // smallest block size is 128 bytes.
+        tmp /= 2;
         order++;
     }
 
+    // Try to merge with buddy blocks.
     while (order < MAX_ORDER) {
-        size_t buddy_offset = ((char*)metadata - (char*)sbrk(0)) ^ metadata->size;
-        MallocMetadata* buddy = (MallocMetadata*)((char*)sbrk(0) + buddy_offset);
-        if (!buddy->is_free || buddy->size != metadata->size){
+        MallocMetadata* buddy = find_buddy(block);
+        if (!buddy || !buddy->is_free || buddy->size != block->size)
             break;
-        }
+        
+        // Remove buddy from its free list.
         if (buddy->prev){
             buddy->prev->next = buddy->next;
         }
         if (buddy->next){
             buddy->next->prev = buddy->prev;
         }
-        if (metadata > buddy){
-            metadata = buddy;
+        if (order_arr[order] == buddy){
+            order_arr[order] = buddy->next;
         }
-        metadata->size *= 2;
-        order++;
-    }
 
-    metadata->next = order_arr[order];
-    order_arr[order] = metadata;
+        // Always merge into the lower-address block.
+        if (buddy < block){
+            block = buddy;
+        }
+        block->size *= 2;
+        order++;
+
+        num_allocated_bytes += sizeof(MallocMetadata);
+        num_allocated_blocks--;
+        num_free_bytes += sizeof(MallocMetadata);
+    }   
+
+    // Insert the (possibly merged) block into the free list for this order.
+    block->next = order_arr[order];
+    block->prev = nullptr;
+    if (order_arr[order]){
+        order_arr[order]->prev = block;
+    }
+    order_arr[order] = block;
 }
 
 void* srealloc(void* oldp, size_t size){
+
     if(!oldp){
         return smalloc(size);
     }
-    MallocMetadata* metadata = (MallocMetadata*)oldp - 1;
-    if(size<=metadata->size){
-        return oldp;
-    }
-    void* ptr= smalloc(size);
-    if(ptr){
-        std::memmove(ptr, oldp, metadata->size);
-        sfree(oldp);
-        return ptr;
-    }
-    return NULL;
 
+    MallocMetadata* block = (MallocMetadata*)oldp - 1;
+
+    if (block->size >= MMAP_THRESHOLD) {
+        if (size == block->size)
+            return oldp;
+        void* newp = smalloc(size);
+        if (!newp)
+            return nullptr;
+        std::memmove(newp, oldp, std::min(size, block->size));
+        munmap(block, block->size + sizeof(MallocMetadata));
+        num_allocated_blocks--;
+        num_allocated_bytes -= block->size;
+        return newp;
+    }
+
+    // If the current buddy block is already large enough, return the same block.
+    if (size <= block->size)
+        return oldp;
+    
+    // Otherwise, allocate a new block, copy data, and free the old block.
+    void* newp = smalloc(size);
+
+    if (!newp){
+        return nullptr;
+    }
+    
+    std::memmove(newp, oldp, block->size - sizeof(MallocMetadata));
+    sfree(oldp);
+    return newp;
 }
 
 size_t _num_free_blocks() { return num_free_blocks; }
