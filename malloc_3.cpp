@@ -9,6 +9,8 @@
 const long int MAX_SIZE=100000000;
 const long int MAX_ORDER=10;
 const size_t MMAP_THRESHOLD = 128 * 1024;
+void* buddy_base = nullptr;
+
 
 struct MallocMetadata {
     size_t size;
@@ -37,16 +39,18 @@ void buddy_allocate(){
         return;
     }
 
+    buddy_base = ptr;
+
     MallocMetadata* head = nullptr;
     MallocMetadata* tail = nullptr;
 
-    for(int i=0;i<num;i++){
+    for(int i=0;i<num;i++){ 
 
         MallocMetadata* current = (MallocMetadata*)ptr;
 
         current->size = MMAP_THRESHOLD;
         current->is_free = true;
-        current->next = NULL;
+        current->next = nullptr;
         current->prev = tail;
 
         if(tail){
@@ -62,7 +66,7 @@ void buddy_allocate(){
         num_allocated_blocks++;
         num_allocated_bytes += (MMAP_THRESHOLD - sizeof(MallocMetadata));
         num_free_blocks++;
-        num_free_bytes+=MMAP_THRESHOLD;
+        num_free_bytes += (MMAP_THRESHOLD - sizeof(MallocMetadata));
         num_meta_data_bytes+=sizeof(MallocMetadata);
 
         ptr = (char*)ptr + MMAP_THRESHOLD;
@@ -76,7 +80,10 @@ void buddy_allocate(){
 
 // Given a block, compute its buddy address using XOR.
 MallocMetadata* find_buddy(MallocMetadata* block) {
-    return (MallocMetadata*)((uintptr_t)block ^ block->size);
+    uintptr_t base = (uintptr_t)buddy_base;
+    uintptr_t offset = (uintptr_t)block - base;
+    uintptr_t buddy_offset = offset ^ block->size;
+    return (MallocMetadata*)(base + buddy_offset);
 }
 
 
@@ -84,44 +91,40 @@ MallocMetadata* find_buddy(MallocMetadata* block) {
 // Helper funcation for challange 3,
 // Splitting: given a block from order 'curr_order', split until we reach 'target_order'.
 MallocMetadata* split_block(int curr_order, int target_order) {
-
-    // Get a block from the free list at a larger order.
     MallocMetadata* block = order_arr[curr_order];
     if (!block){
         return nullptr;
-    }    
-
-    // Remove block from free list.
+    }
+    // Remove block from free list:
     order_arr[curr_order] = block->next;
     if (order_arr[curr_order]){
         order_arr[curr_order]->prev = nullptr;
     }
-    // Split until reaching target order.
+    num_free_blocks--;
+    num_free_bytes -= (block->size - sizeof(MallocMetadata));
+    
     while (curr_order > target_order) {
         curr_order--;
         size_t new_size = block->size / 2;
-    
-        // Create buddy block.
+        
+        // Create buddy block:
         MallocMetadata* buddy = (MallocMetadata*)((char*)block + new_size);
         buddy->size = new_size;
         buddy->is_free = true;
-    
-        // Insert buddy into free list.
         buddy->next = order_arr[curr_order];
         buddy->prev = nullptr;
         if (order_arr[curr_order]){
             order_arr[curr_order]->prev = buddy;
         }
         order_arr[curr_order] = buddy;
-
+        
+        num_allocated_blocks++;  // new block created
         num_allocated_bytes -= sizeof(MallocMetadata);
-        num_free_blocks++;
-        num_free_bytes += (new_size - sizeof(MallocMetadata));
         num_meta_data_bytes += sizeof(MallocMetadata);
-    
-        num_allocated_blocks++;  // one new block created by splitting
-    
-        // Adjust the original block.
+        num_free_blocks++;
+
+        num_free_bytes += (new_size - sizeof(MallocMetadata));
+        
         block->size = new_size;
     }
     return block;
@@ -189,10 +192,6 @@ void* smalloc(size_t size) {
     }
     
     block->is_free = false;
-    // Update free stats: note that splitting might have added free blocks that remain.
-    num_free_blocks--;
-    num_free_bytes -= block->size;
-    
     return (void*)(block + 1);
 }
 
@@ -258,16 +257,17 @@ void sfree(void* p){
             order_arr[order] = buddy->next;
         }
 
-        // Always merge into the lower-address block.
-        if (buddy < block){
-            block = buddy;
-        }
-        block->size *= 2;
-        order++;
-
+        num_free_blocks--;  // two free blocks become one, so decrease free block count by one.
+    
+        num_meta_data_bytes -= sizeof(MallocMetadata);
         num_allocated_bytes += sizeof(MallocMetadata);
         num_allocated_blocks--;
         num_free_bytes += sizeof(MallocMetadata);
+    
+        if (buddy < block)
+            block = buddy;
+        block->size *= 2;
+        order++;
     }   
 
     // Insert the (possibly merged) block into the free list for this order.
