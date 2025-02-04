@@ -228,11 +228,11 @@ void sfree(void* p){
 
     // If the block is an mmap allocation.
     if (block->is_mmap_alloc) {
-    munmap(block, block->size + sizeof(MallocMetadata));
-    num_allocated_blocks--;
-    num_allocated_bytes -= block->size;
-    return;
-}
+        munmap(block, block->size + sizeof(MallocMetadata));
+        num_allocated_blocks--;
+        num_allocated_bytes -= block->size;
+        return;
+    }
 
     block->is_free = true;
     num_free_blocks++;
@@ -249,9 +249,9 @@ void sfree(void* p){
     // Try to merge with buddy blocks.
     while (order < MAX_ORDER) {
         MallocMetadata* buddy = find_buddy(block);
-        if (!buddy || !buddy->is_free || buddy->size != block->size)
+        if (!buddy || !buddy->is_free || buddy->size != block->size){
             break;
-        
+        }
         // Remove buddy from its free list.
         if (buddy->prev){
             buddy->prev->next = buddy->next;
