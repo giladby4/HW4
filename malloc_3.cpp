@@ -293,18 +293,20 @@ void* srealloc(void* oldp, size_t size) {
     MallocMetadata* block = (MallocMetadata*)oldp - 1;
 
     // For mmap-allocated blocks, handle separately.
-    if (block->size >= MMAP_THRESHOLD) {
-        if (size == block->size)
-            return oldp;
-        void* newp = smalloc(size);
-        if (!newp)
-            return nullptr;
-        std::memmove(newp, oldp, std::min(size, block->size));
-        munmap(block, block->size + sizeof(MallocMetadata));
-        num_allocated_blocks--;
-        num_allocated_bytes -= block->size;
-        return newp;
-    }
+    if (block->is_mmap_alloc) {
+    // mmap branch
+    if (size == block->size)
+        return oldp;
+    void* newp = smalloc(size);
+    if (!newp)
+        return nullptr;
+    std::memmove(newp, oldp, std::min(size, block->size));
+    munmap(block, block->size + sizeof(MallocMetadata));
+    num_allocated_blocks--;
+    num_allocated_bytes -= block->size;
+    return newp;
+}
+
 
     // Compute the order of the current block.
     int current_order = 0;
